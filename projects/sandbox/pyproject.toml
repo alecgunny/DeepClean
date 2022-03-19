@@ -67,9 +67,9 @@ filt_fl = "${base.freq_low}"
 filt_fh = "${base.freq_high}"
 filt_order = 8
 
-batch_size = 32
+batch_size = 256
 max_epochs = 500
-lr = 3.2e-2
+lr = 0.256
 weight_decay = 1e-5
 patience = 25
 factor = 0.2

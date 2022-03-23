@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import time
 from typing import Callable, List, Optional, Tuple, Union
@@ -13,6 +14,23 @@ from deepclean.trainer.viz import plot_data_asds
 torch.set_default_tensor_type(torch.FloatTensor)
 
 
+class LinearLRRamp(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, min_lr: float, max_lr: float, warm_up: int):
+        self.min_lr = math.log(min_lr)
+        self.max_lr = math.log(max_lr)
+        self.warm_up = warm_up
+        super().__init__(optimizer)
+
+    def get_lr(self):
+        if self._step_count > self.warm_up:
+            return self._last_lr
+
+        frac = self._step_count / self.warm_up
+        new_lr = self.min_lr + frac * (self.max_lr - self.min_lr)
+        new_lr = math.exp(new_lr)
+        return [new_lr for _ in self.optimizer.param_groups]
+
+
 def train_for_one_epoch(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -20,7 +38,8 @@ def train_for_one_epoch(
     train_data: ChunkedTimeSeriesDataset,
     valid_data: Optional[ChunkedTimeSeriesDataset] = None,
     profiler: Optional[torch.profiler.profile] = None,
-    scaler: Optional[torch.cuda.amp.GradScaler] = None
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
 ):
     """Run a single epoch of training"""
 
@@ -41,12 +60,14 @@ def train_for_one_epoch(
             scaler.update()
         else:
             loss.backward()
+            optimizer.step()
 
         # update weights and add gradient step to
         # profile if we have it turned on
-        optimizer.step()
         if profiler is not None:
             profiler.step()
+        if scheduler is not None:
+            scheduler.step()
 
         train_loss += loss.item() * len(witnesses)
         samples_seen += len(witnesses)
@@ -110,7 +131,9 @@ def train(
     batch_size: int = 32,
     max_epochs: int = 40,
     init_weights: Optional[str] = None,
-    lr: float = 1e-3,
+    min_lr: float = 1e-3,
+    max_lr: float = 1e-3,
+    lr_warmup: int = 50,
     weight_decay: float = 0.0,
     patience: Optional[int] = None,
     factor: float = 0.1,
@@ -313,7 +336,7 @@ def train(
         sample_rate,
         fftlength=fftlength,
         overlap=None,
-        asd=False,
+        asd=True,
         device=device,
         freq_low=filt_fl,
         freq_high=filt_fh,
@@ -342,7 +365,7 @@ def train(
         )
 
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=lr, weight_decay=weight_decay
+        model.parameters(), lr=min_lr, weight_decay=weight_decay
     )
     if patience is not None:
         lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -350,9 +373,10 @@ def train(
             patience=patience,
             factor=factor,
             threshold=0.0001,
-            min_lr=lr * factor ** 2,
+            min_lr=min_lr,
             verbose=True,
         )
+    lr_ramp = LinearLRRamp(optimizer, min_lr, max_lr, lr_warmup)
 
     # start training
     torch.backends.cudnn.benchmark = True
@@ -382,7 +406,8 @@ def train(
             train_data,
             valid_data,
             profiler,
-            scaler
+            scaler,
+            lr_ramp
         )
         history["train_loss"].append(train_loss)
 

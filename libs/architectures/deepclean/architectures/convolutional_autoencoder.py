@@ -89,6 +89,9 @@ class DeepCleanAE(nn.Module):
         self.output_conv = nn.Conv1d(
             in_channels, 1, kernel_size=7, stride=1, padding=3
         )
+        nn.init.zeros_(self.output_conv.weight)
+        nn.init.zeros_(self.output_conv.bias)
+
 
     def forward(self, x):
         x = self.input_conv(x)

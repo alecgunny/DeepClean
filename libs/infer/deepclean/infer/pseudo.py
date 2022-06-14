@@ -132,6 +132,9 @@ def online_postprocess(
     memory_size = int(sample_rate * memory)
     lead_size = int(sample_rate * look_ahead)
 
+    t = np.arange(lead_size) / lead_size
+    window = 1 - np.cos(2 * np.pi * t)
+
     # cut off the last frame because we won't have any lead time for it
     num_frames = (len(predictions) - 1) // frame_size
     frames = []
@@ -140,6 +143,10 @@ def online_postprocess(
         stop = (i + 1) * frame_size + lead_size
 
         prediction = predictions[start:stop]
+        if len(prediction) > (2 * frame_size):
+            prediction[:lead_size] *= window
+        prediction[-lead_size:] *= window[::-1]
+
         prediction = postprocessor(prediction)
 
         prediction = prediction[-frame_size - lead_size : -lead_size]

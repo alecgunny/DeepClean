@@ -11,12 +11,22 @@ from deepclean.gwftools.channels import ChannelList, get_channels
 from deepclean.logging import configure_logging
 
 
+class TimeLag(torch.nn.Module):
+    def __init__(self, stream_start: int, stream_size: int):
+        self.stream_size = stream_size
+        self.stream_start = stream_start
+        super().__init__()
+
+    def forward(self, x):
+        return x[:, self.stream_start : self.stream_start + self.stream_size]
+
+
 def make_ensemble(
     repo: qv.ModelRepository,
     deepclean: qv.Model,
     ensemble_name: str,
     stream_size: int,
-    num_updates: int,
+    stream_start: int,
     snapshotter: Optional[qv.Model] = None,
     streams_per_gpu: int = 1,
 ) -> qv.Model:
@@ -102,23 +112,22 @@ def make_ensemble(
     # doesn't already have one
     if len(ensemble.config.output) == 0:
         if ensemble_name == "deepclean-stream":
-            name = "aggregator"
+            name = "timelag"
         else:
-            name = "aggregator-" + ensemble.name.replace(
-                "deepclean-stream-", ""
+            name = "timelag-" + ensemble.name.replace("deepclean-stream-", "")
+        try:
+            timelag = repo.models[name]
+        except KeyError:
+            lagger = TimeLag(stream_start, stream_size)
+            timelag = repo.add(name, platform=qv.Platform.ONNX)
+            timelag.export_version(
+                lagger,
+                input_shapes={"noise": (1, stream_size)},
+                output_names="stream",
             )
-        ensemble.add_streaming_output(
-            deepclean.outputs["noise"],
-            update_size=stream_size,
-            num_updates=num_updates,
-            name=name,
-            streams_per_gpu=streams_per_gpu,
-        )
-        aggregator = repo.models[name]
-        aggregator.config.sequence_batching.max_sequence_idle_microseconds = (
-            int(6e9)
-        )
-        aggregator.config.write()
+
+        ensemble.add_output(timelag.outputs["stream"])
+        ensemble.pipe(deepclean.outputs["noise"], timelag.inputs["noise"])
 
     # export the ensemble model, which basically amounts
     # to writing its config and creating an empty version entry
@@ -246,7 +255,8 @@ def export(
 
     # export this version of the model (with its current
     # weights), to this entry in the model repository
-    input_shape = (1, len(channels) - 1, int(kernel_length * sample_rate))
+    kernel_size = int(kernel_length * sample_rate)
+    input_shape = (1, len(channels) - 1, kernel_size)
     model.export_version(
         nn, input_shapes={"witness": input_shape}, output_names=["noise"]
     )
@@ -265,7 +275,11 @@ def export(
 
     for latency in max_latency:
         name = ensemble_name.format(latency)
+        stream_size = int(sample_rate * stride_length)
         num_updates = int(latency // stride_length)
+        stream_start = stream_size * num_updates
+        stream_start = kernel_size - stream_start
+
         logging.info(
             "Creating ensemble model {} which averages outputs "
             "over {} updates".format(name, num_updates)
@@ -275,8 +289,8 @@ def export(
             repo,
             model,
             name,
-            stream_size=int(sample_rate * stride_length),
-            num_updates=num_updates,
+            stream_size=stream_size,
+            stream_start=stream_start,
             snapshotter=repo.models.get("snapshotter", None),
             streams_per_gpu=streams_per_gpu,
         )

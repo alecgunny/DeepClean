@@ -4,6 +4,9 @@ description = "Train DeepClean using Lightning"
 version = "0.0.1"
 authors = ["Alec Gunny"]
 
+[tool.poetry.scripts]
+train = "train.cli:main"
+
 [tool.poetry.dependencies]
 python = ">=3.9,<3.12"
 torchmetrics = "^0.11"
